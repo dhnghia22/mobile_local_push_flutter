@@ -66,15 +66,12 @@ public class MobileLocalPushPlugin: NSObject, FlutterPlugin {
     case "cancelAllNotifications":
       UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
       result(nil)
-    default:
-      
     case "rescheduleNotifications":
       // iOS không cần reschedule vì UNUserNotificationCenter tự động persist
       // Trả về số notification đang pending
-      UNUserNotificationCenter.current().getPendingNotificationRequests { requests in
-        result(requests.count)
-      }
-      
+       UNUserNotificationCenter.current().getPendingNotificationRequests { requests in
+         result(requests.count)
+       }
     default:
       result(FlutterMethodNotImplemented)
     }
