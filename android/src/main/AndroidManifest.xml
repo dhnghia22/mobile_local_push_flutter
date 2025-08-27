@@ -1,0 +1,28 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  package="com.yourorg.mobile_local_push">
+  
+  <!-- Permissions for notifications and alarms -->
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+  <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  
+  <application>
+    <!-- Receiver for displaying notifications -->
+    <receiver android:name=".NotificationReceiver" 
+              android:enabled="true"
+              android:exported="false" />
+              
+    <!-- Receiver for boot completed -->
+    <receiver android:name=".BootReceiver"
+              android:enabled="true"
+              android:exported="false">
+      <intent-filter android:priority="1000">
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+        <action android:name="android.intent.action.PACKAGE_REPLACED" />
+        <data android:scheme="package" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>
