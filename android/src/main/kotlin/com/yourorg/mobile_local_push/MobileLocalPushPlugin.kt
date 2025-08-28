@@ -294,9 +294,14 @@ class NotificationReceiver : android.content.BroadcastReceiver() {
         val builder = android.app.Notification.Builder(context, channelId)
             .setContentTitle(title)
             .setContentText(description)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(getDefaultIcon(context))
             .setAutoCancel(true)
             .setContentIntent(pendingIntent) // Thêm intent để mở app
+
+        val defaultColor = getDefaultColor(context)
+        if (defaultColor != null) {
+            builder.setColor(defaultColor)
+        }
             
         notificationManager.notify(id.hashCode(), builder.build())
         
@@ -307,6 +312,38 @@ class NotificationReceiver : android.content.BroadcastReceiver() {
         prefs.edit().putStringSet("notifications", filtered).apply()
         
         Log.d("NotificationReceiver", "Notification displayed and removed from SharedPreferences: $id")
+    }
+
+
+    private fun getDefaultColor(context: Context): Int? {
+        return try {
+            val packageManager = context.packageManager
+            val applicationInfo = packageManager.getApplicationInfo(
+                context.packageName, 
+                PackageManager.GET_META_DATA
+            )
+            val colorResId = applicationInfo.metaData?.getInt("com.nghiadinh.mobile_local_push.default_color")
+            if (colorResId != null && colorResId != 0) {
+                context.getColor(colorResId)
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // Function để đọc icon từ metadata
+    private fun getDefaultIcon(context: Context): Int {
+        return try {
+            val packageManager = context.packageManager
+            val applicationInfo = packageManager.getApplicationInfo(
+                context.packageName, 
+                PackageManager.GET_META_DATA
+            )
+            val iconResId = applicationInfo.metaData?.getInt("com.nghiadinh.mobile_local_push.default_icon")
+            iconResId ?: android.R.drawable.ic_dialog_info
+        } catch (e: Exception) {
+            android.R.drawable.ic_dialog_info
+        }
     }
 }
 
