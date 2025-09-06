@@ -14,6 +14,8 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.content.pm.ApplicationInfo
 import androidx.core.content.ContextCompat
+import androidx.work.*
+import java.util.concurrent.TimeUnit
 
 /** MobileLocalPushPlugin */
 class MobileLocalPushPlugin :
@@ -108,41 +110,38 @@ class MobileLocalPushPlugin :
                 val description = call.argument<String>("description") ?: ""
                 val timestamp = call.argument<Int>("timestamp") ?: 0
                 val id = timestamp.toString()
-                Log.d("MobileLocalPushPlugin", "Scheduling alarm for timestamp: $timestamp, id: $id, title: $title")
+                Log.d("MobileLocalPushPlugin", "Scheduling notification for timestamp: $timestamp, id: $id, title: $title")
 
-                val intent = android.content.Intent(context, NotificationReceiver::class.java).apply {
-                    putExtra("id", id)
-                    putExtra("title", title)
-                    putExtra("description", description)
-                }
-                val pendingIntent = android.app.PendingIntent.getBroadcast(
-                    context,
-                    id.hashCode(),
-                    intent,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-                )
-                val alarmManager = context.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+                val currentTime = System.currentTimeMillis() / 1000
+                val scheduleTime = timestamp.toLong()
                 
-                // Kiểm tra quyền SCHEDULE_EXACT_ALARM cho Android 12+
-                if (android.os.Build.VERSION.SDK_INT >= 31) {
-                    if (!alarmManager.canScheduleExactAlarms()) {
-                        Log.e("MobileLocalPushPlugin", "Cannot schedule exact alarms - permission not granted")
-                        result.error("PERMISSION_DENIED", "Cannot schedule exact alarms", null)
-                        return
-                    }
+                if (scheduleTime <= currentTime) {
+                    Log.e("MobileLocalPushPlugin", "Cannot schedule notification in the past")
+                    result.error("INVALID_TIME", "Cannot schedule notification in the past", null)
+                    return
                 }
                 
-                val scheduleTime = timestamp.toLong() * 1000
-                val currentTime = System.currentTimeMillis()
-                Log.d("MobileLocalPushPlugin", "Current time: $currentTime, Schedule time: $scheduleTime")
+                val delay = scheduleTime - currentTime
+                Log.d("MobileLocalPushPlugin", "Current time: $currentTime, Schedule time: $scheduleTime, Delay: $delay seconds")
                 
-                alarmManager.setExact(
-                    android.app.AlarmManager.RTC_WAKEUP,
-                    scheduleTime,
-                    pendingIntent
-                )
+                // Tạo input data cho Worker
+                val inputData = Data.Builder()
+                    .putString("id", id)
+                    .putString("title", title)
+                    .putString("description", description)
+                    .build()
                 
-                Log.d("MobileLocalPushPlugin", "Alarm scheduled successfully")
+                // Tạo OneTimeWorkRequest với delay
+                val notificationWork = OneTimeWorkRequestBuilder<NotificationWorker>()
+                    .setInputData(inputData)
+                    .setInitialDelay(delay, TimeUnit.SECONDS)
+                    .addTag("notification_$id")
+                    .build()
+                
+                // Enqueue work
+                WorkManager.getInstance(context).enqueue(notificationWork)
+                
+                Log.d("MobileLocalPushPlugin", "Notification work scheduled successfully with WorkManager")
                 
                 // Lưu vào SharedPreferences
                 val prefs = context.getSharedPreferences("mobile_local_push", android.content.Context.MODE_PRIVATE)
@@ -168,15 +167,10 @@ class MobileLocalPushPlugin :
             }
             "cancelNotification" -> {
                 val id = call.argument<String>("id") ?: ""
-                val intent = android.content.Intent(context, NotificationReceiver::class.java)
-                val pendingIntent = android.app.PendingIntent.getBroadcast(
-                    context,
-                    id.hashCode(),
-                    intent,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-                )
-                val alarmManager = context.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
-                alarmManager.cancel(pendingIntent)
+                
+                // Cancel WorkManager task
+                WorkManager.getInstance(context).cancelAllWorkByTag("notification_$id")
+                
                 // Xóa khỏi SharedPreferences
                 val prefs = context.getSharedPreferences("mobile_local_push", android.content.Context.MODE_PRIVATE)
                 val notifications = prefs.getStringSet("notifications", mutableSetOf()) ?: mutableSetOf()
@@ -187,36 +181,21 @@ class MobileLocalPushPlugin :
             "cancelAllNotifications" -> {
                 val prefs = context.getSharedPreferences("mobile_local_push", android.content.Context.MODE_PRIVATE)
                 val notifications = prefs.getStringSet("notifications", mutableSetOf()) ?: mutableSetOf()
-                val alarmManager = context.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+                
+                // Cancel all WorkManager tasks
                 notifications.forEach { notif: String ->
                     val id = notif.split("|").getOrNull(0) ?: ""
-                    val intent = android.content.Intent(context, NotificationReceiver::class.java)
-                    val pendingIntent = android.app.PendingIntent.getBroadcast(
-                        context,
-                        id.hashCode(),
-                        intent,
-                        android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-                    )
-                    alarmManager.cancel(pendingIntent)
+                    WorkManager.getInstance(context).cancelAllWorkByTag("notification_$id")
                 }
+                
                 prefs.edit().putStringSet("notifications", mutableSetOf()).apply()
                 result.success(null)
             }
             "rescheduleNotifications" -> {
                 val prefs = context.getSharedPreferences("mobile_local_push", android.content.Context.MODE_PRIVATE)
                 val notifications = prefs.getStringSet("notifications", mutableSetOf()) ?: mutableSetOf()
-                val alarmManager = context.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
                 
-                // Kiểm tra quyền SCHEDULE_EXACT_ALARM cho Android 12+
-                if (android.os.Build.VERSION.SDK_INT >= 31) {
-                    if (!alarmManager.canScheduleExactAlarms()) {
-                        Log.e("MobileLocalPushPlugin", "Cannot reschedule exact alarms - permission not granted")
-                        result.error("PERMISSION_DENIED", "Cannot reschedule exact alarms", null)
-                        return
-                    }
-                }
-                
-                val currentTime = System.currentTimeMillis()
+                val currentTime = System.currentTimeMillis() / 1000
                 var rescheduledCount = 0
                 val validNotifications = mutableSetOf<String>()
                 
@@ -227,28 +206,27 @@ class MobileLocalPushPlugin :
                         val title = parts[1]
                         val description = parts[2]
                         val timestamp = parts[3].toLongOrNull() ?: 0
-                        val scheduleTime = timestamp * 1000
                         
                         // Chỉ reschedule những notification chưa hết hạn
-                        if (scheduleTime > currentTime) {
-                            val intent = android.content.Intent(context, NotificationReceiver::class.java).apply {
-                                putExtra("id", id)
-                                putExtra("title", title)
-                                putExtra("description", description)
-                            }
+                        if (timestamp > currentTime) {
+                            val delay = timestamp - currentTime
                             
-                            val pendingIntent = android.app.PendingIntent.getBroadcast(
-                                context,
-                                id.hashCode(),
-                                intent,
-                                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-                            )
+                            // Tạo input data cho Worker
+                            val inputData = Data.Builder()
+                                .putString("id", id)
+                                .putString("title", title)
+                                .putString("description", description)
+                                .build()
                             
-                            alarmManager.setExact(
-                                android.app.AlarmManager.RTC_WAKEUP,
-                                scheduleTime,
-                                pendingIntent
-                            )
+                            // Tạo OneTimeWorkRequest với delay
+                            val notificationWork = OneTimeWorkRequestBuilder<NotificationWorker>()
+                                .setInputData(inputData)
+                                .setInitialDelay(delay, TimeUnit.SECONDS)
+                                .addTag("notification_$id")
+                                .build()
+                            
+                            // Enqueue work
+                            WorkManager.getInstance(context).enqueue(notificationWork)
                             
                             validNotifications.add(notif)
                             rescheduledCount++
@@ -344,9 +322,15 @@ class NotificationReceiver : android.content.BroadcastReceiver() {
                 PackageManager.GET_META_DATA
             )
             val iconResId = applicationInfo.metaData?.getInt("com.nghiadinh.mobile_local_push.default_icon")
-            iconResId ?: android.R.drawable.ic_dialog_info
+            if (iconResId != null && iconResId != 0) {
+                iconResId
+            } else {
+                // Sử dụng ic_launcher hoặc fallback an toàn
+                context.applicationInfo.icon
+            }
         } catch (e: Exception) {
-            android.R.drawable.ic_dialog_info
+            // Fallback cuối cùng - sử dụng ic_launcher của app
+            context.applicationInfo.icon
         }
     }
 }
@@ -361,17 +345,8 @@ class BootReceiver : android.content.BroadcastReceiver() {
             
             val prefs = context.getSharedPreferences("mobile_local_push", android.content.Context.MODE_PRIVATE)
             val notifications = prefs.getStringSet("notifications", mutableSetOf()) ?: mutableSetOf()
-            val alarmManager = context.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
             
-            // Kiểm tra quyền SCHEDULE_EXACT_ALARM cho Android 12+
-            if (android.os.Build.VERSION.SDK_INT >= 31) {
-                if (!alarmManager.canScheduleExactAlarms()) {
-                    Log.e("BootReceiver", "Cannot reschedule exact alarms - permission not granted")
-                    return
-                }
-            }
-            
-            val currentTime = System.currentTimeMillis()
+            val currentTime = System.currentTimeMillis() / 1000
             var rescheduledCount = 0
             val validNotifications = mutableSetOf<String>()
             
@@ -382,32 +357,31 @@ class BootReceiver : android.content.BroadcastReceiver() {
                     val title = parts[1] 
                     val description = parts[2]
                     val timestamp = parts[3].toLongOrNull() ?: 0
-                    val scheduleTime = timestamp * 1000
                     
                     // Chỉ reschedule những notification chưa hết hạn
-                    if (scheduleTime > currentTime) {
-                        val notificationIntent = android.content.Intent(context, NotificationReceiver::class.java).apply {
-                            putExtra("id", id)
-                            putExtra("title", title)
-                            putExtra("description", description)
-                        }
+                    if (timestamp > currentTime) {
+                        val delay = timestamp - currentTime
                         
-                        val pendingIntent = android.app.PendingIntent.getBroadcast(
-                            context,
-                            id.hashCode(),
-                            notificationIntent,
-                            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-                        )
+                        // Tạo input data cho Worker
+                        val inputData = Data.Builder()
+                            .putString("id", id)
+                            .putString("title", title)
+                            .putString("description", description)
+                            .build()
                         
-                        alarmManager.setExact(
-                            android.app.AlarmManager.RTC_WAKEUP,
-                            scheduleTime,
-                            pendingIntent
-                        )
+                        // Tạo OneTimeWorkRequest với delay
+                        val notificationWork = OneTimeWorkRequestBuilder<NotificationWorker>()
+                            .setInputData(inputData)
+                            .setInitialDelay(delay, TimeUnit.SECONDS)
+                            .addTag("notification_$id")
+                            .build()
+                        
+                        // Enqueue work
+                        WorkManager.getInstance(context).enqueue(notificationWork)
                         
                         validNotifications.add(notif)
                         rescheduledCount++
-                        Log.d("BootReceiver", "Rescheduled notification: $id at $scheduleTime")
+                        Log.d("BootReceiver", "Rescheduled notification: $id at $timestamp")
                     } else {
                         Log.d("BootReceiver", "Skipped expired notification: $id")
                     }
